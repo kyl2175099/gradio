@@ -4,11 +4,15 @@ import asyncio
 import functools
 import hashlib
 import hmac
+import importlib.resources
 import json
+import mimetypes
 import os
 import pickle
 import re
+import secrets
 import shutil
+import tempfile
 import threading
 import unicodedata
 import uuid
@@ -24,6 +28,7 @@ from typing import (
     Any,
     BinaryIO,
     Union,
+    cast,
 )
 from urllib.parse import urlparse
 
@@ -40,19 +45,24 @@ from starlette.datastructures import (
     State,
     UploadFile,
 )
+from starlette.exceptions import HTTPException
 from starlette.formparsers import MultiPartException, MultipartPart
-from starlette.responses import PlainTextResponse, Response
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import FileResponse, PlainTextResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gradio import processing_utils, utils
 from gradio.data_classes import (
     BlocksConfigDict,
+    DeveloperPath,
     MediaStreamChunk,
     PredictBody,
     PredictBodyInternal,
+    UserProvidedPath,
 )
-from gradio.exceptions import Error
+from gradio.exceptions import Error, InvalidPathError
 from gradio.state_holder import SessionState
+from gradio.utils import get_package_version
 
 if TYPE_CHECKING:
     from gradio.blocks import BlockFunction, Blocks, BlocksConfig
@@ -62,6 +72,9 @@ if TYPE_CHECKING:
 
 config_lock = threading.Lock()
 API_PREFIX = "/gradio_api"
+
+
+mimetypes.init()
 
 
 class Obj:
@@ -1105,3 +1118,198 @@ STATIC_ROUTE_PREFIXES = (
     "/upload",
     "/custom_component/",
 )
+
+
+def routes_safe_join(directory: DeveloperPath, path: UserProvidedPath) -> str:
+    """Safely join the user path to the directory while performing some additional http-related checks,
+    e.g. ensuring that the full path exists on the local file system and is not a directory
+    """
+    if path == "":
+        raise fastapi.HTTPException(400)
+    if starts_with_protocol(path):
+        raise fastapi.HTTPException(403)
+    try:
+        fullpath = Path(utils.safe_join(directory, path))
+    except InvalidPathError as e:
+        raise fastapi.HTTPException(403) from e
+    if fullpath.is_dir():
+        raise fastapi.HTTPException(403)
+    if not fullpath.exists():
+        raise fastapi.HTTPException(404)
+    return str(fullpath)
+
+
+STATIC_TEMPLATE_LIB = cast(
+    DeveloperPath,
+    importlib.resources.files("gradio").joinpath("templates").as_posix(),  # type: ignore
+)
+STATIC_PATH_LIB = cast(
+    DeveloperPath,
+    importlib.resources.files("gradio")
+    .joinpath("templates/frontend/static")
+    .as_posix(),  # type: ignore
+)
+BUILD_PATH_LIB = cast(
+    DeveloperPath,
+    importlib.resources.files("gradio")
+    .joinpath("templates/frontend/assets")
+    .as_posix(),  # type: ignore
+)
+VERSION = get_package_version()
+XSS_SAFE_MIMETYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/ogg",
+    "video/mp4",
+    "video/webm",
+    "video/ogg",
+    "text/plain",
+    "application/json",
+}
+
+DEFAULT_TEMP_DIR = os.environ.get("GRADIO_TEMP_DIR") or str(
+    Path(tempfile.gettempdir()) / "gradio"
+)
+
+
+def file_response(developer_path: DeveloperPath, user_path: UserProvidedPath):
+    return FileResponse(routes_safe_join(developer_path, user_path))
+
+
+def favicon(favicon_path: str | Path | None = None):
+    if favicon_path is None:
+        return file_response(STATIC_PATH_LIB, UserProvidedPath("img/logo.svg"))
+    else:
+        return FileResponse(favicon_path)
+
+
+def file_fetch(
+    path_or_url,
+    request,
+    blocks_or_config,
+    upload_dir,
+):
+    if client_utils.is_http_url_like(path_or_url):
+        from starlette.responses import RedirectResponse
+
+        return RedirectResponse(url=path_or_url, status_code=302)
+
+    if starts_with_protocol(path_or_url):
+        raise HTTPException(403, f"File not allowed: {path_or_url}.")
+
+    abs_path = utils.abspath(path_or_url)
+    try:
+        if abs_path.is_dir() or not abs_path.exists():
+            raise HTTPException(403, f"File not allowed: {path_or_url}.")
+    except Exception as e:
+        raise HTTPException(403, f"File not allowed: {path_or_url}.") from e
+
+    from gradio.data_classes import _StaticFiles
+
+    allowed, reason = utils.is_allowed_file(
+        abs_path,
+        blocked_paths=blocks_or_config.blocked_paths,
+        allowed_paths=blocks_or_config.allowed_paths + _StaticFiles.all_paths,
+        created_paths=[upload_dir, str(utils.get_cache_folder())],
+    )
+    if not allowed:
+        raise HTTPException(403, f"File not allowed: {path_or_url}.")
+
+    mime_type, _ = mimetypes.guess_type(abs_path)
+    if mime_type in XSS_SAFE_MIMETYPES or reason == "allowed":
+        media_type = mime_type or "application/octet-stream"
+        content_disposition_type = "inline"
+    else:
+        media_type = "application/octet-stream"
+        content_disposition_type = "attachment"
+
+    range_val = request.headers.get("Range", "").strip()
+    if range_val.startswith("bytes=") and "-" in range_val:
+        range_val = range_val[6:]
+        start, end = range_val.split("-")
+        if start.isnumeric() and end.isnumeric():
+            from gradio_client.utils import ranged_response
+
+            start = int(start)
+            end = int(end)
+            headers = dict(request.headers)
+            headers["Content-Disposition"] = content_disposition_type
+            headers["Content-Type"] = media_type
+            return ranged_response.RangedFileResponse(
+                abs_path,
+                ranged_response.OpenRange(start, end),
+                headers,
+                stat_result=os.stat(abs_path),
+            )
+
+    return FileResponse(
+        abs_path,
+        headers={"Accept-Ranges": "bytes"},
+        content_disposition_type=content_disposition_type,
+        media_type=media_type,
+        filename=abs_path.name,
+    )
+
+
+async def upload_fn(
+    request: StarletteRequest,
+    upload_dir,
+    max_file_size,
+    upload_id,
+    force_move: bool = True,
+):
+    content_type_header = request.headers.get("Content-Type")
+    content_type: bytes
+    content_type, _ = parse_options_header(content_type_header or "")
+    if content_type != b"multipart/form-data":
+        raise HTTPException(status_code=400, detail="Invalid content type.")
+
+    multipart_parser = GradioMultiPartParser(
+        request.headers,
+        request.stream(),
+        max_files=1000,
+        max_fields=1000,
+        max_file_size=max_file_size,
+        upload_id=upload_id,
+    )
+    form = await multipart_parser.parse()
+
+    output_files = []
+    files_to_copy = []
+    locations = []
+    for temp_file in form.getlist("files"):
+        if not isinstance(temp_file, GradioUploadFile):
+            raise TypeError("File is not an instance of GradioUploadFile")
+        if temp_file.filename:
+            file_name = Path(temp_file.filename).name
+            name = client_utils.strip_invalid_filename_characters(file_name)
+        else:
+            name = f"tmp{secrets.token_hex(5)}"
+        directory = Path(upload_dir) / temp_file.sha.hexdigest()
+        directory.mkdir(exist_ok=True, parents=True)
+        try:
+            dest = utils.safe_join(
+                DeveloperPath(str(directory)), UserProvidedPath(name)
+            )
+        except InvalidPathError as err:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid file name: {name}"
+            ) from err
+        temp_file.file.close()
+        try:
+            os.rename(temp_file.file.name, dest)
+        except OSError:
+            if force_move:
+                import shutil
+
+                shutil.move(temp_file.file.name, dest)
+            else:
+                files_to_copy.append(temp_file.file.name)
+                locations.append(dest)
+        output_files.append(dest)
+
+    return output_files, files_to_copy, locations

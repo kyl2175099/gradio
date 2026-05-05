@@ -77,7 +77,6 @@ proxy.on("error", (err, req, res) => {
 
 const server = http.createServer((req, res) => {
 	const url = req.url || "/";
-	// Strip query string for prefix matching
 	const path = url.split("?")[0];
 
 	// 1. Static routes -> workers (round-robin) or Python fallback.
