@@ -52,7 +52,7 @@ def create_static_app(config: StaticServerConfig) -> fastapi.FastAPI:
 
     app = fastapi.FastAPI()
     app.add_middleware(
-        CORSMiddleware,
+        CORSMiddleware,  # type: ignore
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
