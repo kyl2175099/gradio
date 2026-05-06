@@ -1232,7 +1232,7 @@ def file_fetch(
         range_val = range_val[6:]
         start, end = range_val.split("-")
         if start.isnumeric() and end.isnumeric():
-            from gradio_client.utils import ranged_response  # type: ignore
+            from gradio import ranged_response  # type: ignore
 
             start = int(start)
             end = int(end)
