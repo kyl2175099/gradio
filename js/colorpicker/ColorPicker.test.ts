@@ -161,7 +161,7 @@ describe("Color gradient", () => {
 		expect(input).toHaveBeenCalled();
 	});
 
-	test("mouseup after dragging dispatches release with hex payload", async () => {
+	test("mouseup after dragging dispatches release with new value", async () => {
 		const result = await render(ColorPicker, default_props);
 		const release = result.listen("release");
 
@@ -176,9 +176,7 @@ describe("Color gradient", () => {
 		await fireEvent.mouseUp(window);
 
 		expect(release).toHaveBeenCalledTimes(1);
-		expect(release).toHaveBeenCalledWith(
-			expect.stringMatching(/^#[0-9a-f]{6}$/)
-		);
+		expect(release).toHaveBeenCalledWith("#cc8f8f");
 	});
 
 	test("dragging updates get_data value", async () => {
@@ -195,8 +193,7 @@ describe("Color gradient", () => {
 		await fireEvent.mouseUp(window);
 
 		const data = await result.get_data();
-		expect(data.value).toMatch(/^#[0-9a-f]{6}$/);
-		expect(data.value).not.toBe("#000000");
+		expect(data.value).toBe("#cc2929");
 	});
 
 	test("mouseup without prior drag does not dispatch release", async () => {
@@ -228,8 +225,11 @@ describe("Hue slider", () => {
 		expect(input).toHaveBeenCalled();
 	});
 
-	test("mouseup after dragging dispatches release with hex payload", async () => {
-		const result = await render(ColorPicker, default_props);
+	test("mouseup after dragging dispatches release with new value", async () => {
+		const result = await render(ColorPicker, {
+			...default_props,
+			value: "#ff0000"
+		});
 		const release = result.listen("release");
 
 		await open_picker(result);
@@ -241,9 +241,7 @@ describe("Hue slider", () => {
 		await fireEvent.mouseUp(window);
 
 		expect(release).toHaveBeenCalledTimes(1);
-		expect(release).toHaveBeenCalledWith(
-			expect.stringMatching(/^#[0-9a-f]{6}$/)
-		);
+		expect(release).toHaveBeenCalledWith("#00ff66");
 	});
 
 	test("dragging updates get_data value", async () => {
@@ -261,7 +259,7 @@ describe("Hue slider", () => {
 		await fireEvent.mouseUp(window);
 
 		const data = await result.get_data();
-		expect(data.value).toMatch(/^#[0-9a-f]{6}$/);
+		expect(data.value).toBe("#00ffff");
 	});
 });
 
@@ -406,13 +404,14 @@ describe("Mode switching", () => {
 describe("Events", () => {
 	afterEach(() => cleanup());
 
-	test("change: emitted when set_data pushes new value", async () => {
+	test("change: emitted with new value when set_data pushes new value", async () => {
 		const result = await render(ColorPicker, default_props);
 		const change = result.listen("change");
 
 		await result.set_data({ value: "#ff0000" });
 
 		expect(change).toHaveBeenCalledTimes(1);
+		expect(change).toHaveBeenCalledWith("#ff0000");
 	});
 
 	test("change: not emitted on mount", async () => {
@@ -430,98 +429,6 @@ describe("Events", () => {
 		await result.set_data({ value: "#ff0000" });
 
 		expect(change).toHaveBeenCalledTimes(1);
-	});
-
-	test("input: emitted on gradient drag", async () => {
-		const result = await render(ColorPicker, default_props);
-		const input = result.listen("input");
-
-		await open_picker(result);
-
-		const gradient = result.getByRole("slider", {
-			name: "Saturation and brightness"
-		});
-		mock_rect(gradient);
-
-		await fireEvent.mouseDown(gradient, { clientX: 50, clientY: 50 });
-		await fireEvent.mouseUp(window);
-
-		expect(input).toHaveBeenCalled();
-	});
-
-	test("input: emitted on hue drag", async () => {
-		const result = await render(ColorPicker, default_props);
-		const input = result.listen("input");
-
-		await open_picker(result);
-
-		const hue = result.getByRole("slider", { name: "Hue" });
-		mock_rect(hue);
-
-		await fireEvent.mouseDown(hue, { clientX: 50 });
-		await fireEvent.mouseUp(window);
-
-		expect(input).toHaveBeenCalled();
-	});
-
-	test("release: emitted with hex payload after gradient drag", async () => {
-		const result = await render(ColorPicker, default_props);
-		const release = result.listen("release");
-
-		await open_picker(result);
-
-		const gradient = result.getByRole("slider", {
-			name: "Saturation and brightness"
-		});
-		mock_rect(gradient);
-
-		await fireEvent.mouseDown(gradient, { clientX: 30, clientY: 20 });
-		await fireEvent.mouseUp(window);
-
-		expect(release).toHaveBeenCalledTimes(1);
-		expect(release).toHaveBeenCalledWith(
-			expect.stringMatching(/^#[0-9a-f]{6}$/)
-		);
-	});
-
-	test("release: emitted with hex payload after hue drag", async () => {
-		const result = await render(ColorPicker, default_props);
-		const release = result.listen("release");
-
-		await open_picker(result);
-
-		const hue = result.getByRole("slider", { name: "Hue" });
-		mock_rect(hue);
-
-		await fireEvent.mouseDown(hue, { clientX: 40 });
-		await fireEvent.mouseUp(window);
-
-		expect(release).toHaveBeenCalledTimes(1);
-		expect(release).toHaveBeenCalledWith(
-			expect.stringMatching(/^#[0-9a-f]{6}$/)
-		);
-	});
-
-	test("release: not emitted on mouseup without drag", async () => {
-		const result = await render(ColorPicker, default_props);
-		const release = result.listen("release");
-
-		await fireEvent.mouseUp(window);
-
-		expect(release).not.toHaveBeenCalled();
-	});
-
-	test("submit: emitted on Enter in input field", async () => {
-		const result = await render(ColorPicker, default_props);
-		const submit = result.listen("submit");
-
-		await open_picker(result);
-
-		const input = result.getByRole("textbox");
-		input.focus();
-		await fireEvent.keyDown(input, { key: "Enter" });
-
-		expect(submit).toHaveBeenCalledTimes(1);
 	});
 
 	test("focus: emitted when swatch is focused", async () => {
