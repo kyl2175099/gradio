@@ -1,6 +1,6 @@
 ---
-"@gradio/colorpicker": minor
-"gradio": minor
+"@gradio/colorpicker": patch
+"gradio": patch
 ---
 
-feat:add colour picker unit tests
+fix:add colour picker unit tests
